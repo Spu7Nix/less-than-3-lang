@@ -1,0 +1,4 @@
+doubled = *2;
+of_four = :4;
+
+main = doubled of_four;
