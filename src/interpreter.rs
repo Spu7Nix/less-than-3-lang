@@ -13,6 +13,7 @@ enum Function {
     Minus(Value),
     Mult(Value),
     Div(Value),
+    Mod(Value),
 
     Gt(Value),
     Lt(Value),
@@ -20,6 +21,10 @@ enum Function {
     Lte(Value),
     Eq(Value),
     Neq(Value),
+
+    Compose(Value),
+
+    Composit(Box<Function>, Box<Function>),
 
     Apply(Value),
 }
@@ -32,6 +37,7 @@ impl Function {
             (Value::Number(n), Function::Minus(Value::Number(n2))) => Value::Number(n - n2),
             (Value::Number(n), Function::Mult(Value::Number(n2))) => Value::Number(n * n2),
             (Value::Number(n), Function::Div(Value::Number(n2))) => Value::Number(n / n2),
+            (Value::Number(n), Function::Mod(Value::Number(n2))) => Value::Number(n % n2),
 
             (Value::Number(n), Function::Gt(Value::Number(n2))) => Value::Bool(n > n2),
             (Value::Number(n), Function::Lt(Value::Number(n2))) => Value::Bool(n < n2),
@@ -42,6 +48,11 @@ impl Function {
             (arg, Function::Neq(v)) => Value::Bool(arg == v),
 
             (Value::Function(f), Function::Apply(val)) => f.call(val, state),
+            (Value::Function(f), Function::Compose(Value::Function(f2))) => {
+                Value::Function(Box::from(Function::Composit(f.clone(), f2.clone())))
+            }
+
+            (arg, Function::Composit(f1, f2)) => f2.call(&f1.call(arg, state), state),
 
             a => panic!("Invalid function call: {:?} {:?}", a.0, a.1),
         }
@@ -97,6 +108,7 @@ fn eval_expression(e: Expression, state: &mut State) -> Value {
                 Token::Minus => Minus(val),
                 Token::Slash => Div(val),
                 Token::Star => Mult(val),
+                Token::Modulo => Mod(val),
 
                 Token::MoreThan => Gt(val),
                 Token::LessThan => Lt(val),
@@ -107,7 +119,9 @@ fn eval_expression(e: Expression, state: &mut State) -> Value {
 
                 Token::Colon => Apply(val),
 
-                _ => panic!("Invalid operator"),
+                Token::Period => Compose(val),
+
+                a => panic!("Invalid operator: {:?}", a),
             }))
         }
     }

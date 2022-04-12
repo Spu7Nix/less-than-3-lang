@@ -134,6 +134,7 @@ macro_rules! operator_pat {
 
 fn precedence(op: &Token) -> u8 {
     match op {
+        Token::Period => 9,
         Token::Or => 8,
         Token::And => 8,
         Token::Equal => 7,
