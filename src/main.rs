@@ -1,3 +1,4 @@
+#![feature(box_patterns)]
 mod builtin;
 mod interpreter;
 mod parser;
@@ -15,5 +16,5 @@ fn main() {
     let items = parser::parse(contents).expect("Failed to parse script");
     //dbg!(&items);
     let evaled = interpreter::interpret(items);
-    println!("{:?}", evaled);
+    println!("{}", evaled);
 }

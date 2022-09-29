@@ -4,10 +4,10 @@ use logos::Logos;
 #[derive(Logos, Debug, PartialEq, Clone)]
 pub enum Token {
     // operators
-    #[token("||")]
+    #[token("|")]
     Or,
 
-    #[token("&&")]
+    #[token("&")]
     And,
 
     #[token("==")]
@@ -73,6 +73,9 @@ pub enum Token {
     #[token("false")]
     False,
 
+    #[token("$")]
+    Dollar,
+
     //TERMINATORS
     #[token(",")]
     Comma,
@@ -98,9 +101,8 @@ pub enum Token {
     #[token(":")]
     Colon,
 
-    #[token(".")]
-    Period,
-
+    // #[token(".")]
+    // Period,
     #[token(";")]
     Semicolon,
 
@@ -126,15 +128,15 @@ macro_rules! operator_pat {
             | Token::Minus
             | Token::Slash
             | Token::Exclamation
-            | Token::Comma
+            //| Token::Comma
             | Token::Colon
-            | Token::Period
+        //| Token::Period
     };
 }
 
 fn precedence(op: &Token) -> u8 {
     match op {
-        Token::Period => 9,
+        //Token::Period => 9,
         Token::Or => 8,
         Token::And => 8,
         Token::Equal => 7,
@@ -166,10 +168,11 @@ pub enum Expression {
     Number(f64),
     StringLiteral(String),
     Boolean(bool),
-    List(Vec<Expression>),
+    Tuple(Vec<Expression>),
 
     FunctionCall(Box<Expression>, Box<Expression>),
     Operator(Token, Box<Expression>),
+    Argument,
 }
 
 struct Tokens {
@@ -259,12 +262,36 @@ fn parse_expression(
         Token::StringLiteral(string) => Expression::StringLiteral(string),
         Token::True => Expression::Boolean(true),
         Token::False => Expression::Boolean(false),
+        Token::Dollar => Expression::Argument,
         Token::OpenBracket => {
-            let expr = parse_expression(tokens, !0, true)?;
-            if let Some(Token::ClosingBracket) = tokens.peek() {
-                tokens.next();
-            } else {
-                return Err(SyntaxError::Message("Expected )".to_string()));
+            let mut expr = parse_expression(tokens, !0, true)?;
+            match tokens.peek() {
+                Some(Token::ClosingBracket) => {
+                    tokens.next();
+                }
+                Some(Token::Comma) => {
+                    let mut list = vec![expr];
+                    tokens.next();
+
+                    loop {
+                        //dbg!("hi");
+                        list.push(parse_expression(tokens, !0, true)?);
+                        match tokens.peek() {
+                            Some(Token::Comma) => {
+                                tokens.next();
+                            }
+                            Some(Token::ClosingBracket) => {
+                                tokens.next();
+                                break;
+                            }
+                            _ => {
+                                return Err(SyntaxError::Message("Expected , or )".to_string()));
+                            }
+                        }
+                    }
+                    expr = Expression::Tuple(list)
+                }
+                _ => return Err(SyntaxError::Message("Expected )".to_string())),
             }
             expr
         }
@@ -275,14 +302,21 @@ fn parse_expression(
                 let right = parse_expression(tokens, precedence(&operator), true)?;
                 Expression::Operator(operator, Box::new(right))
             } else {
-                return Err(SyntaxError::Message("Expected expression".to_string()));
+                return Err(SyntaxError::Message(format!(
+                    "Expected expression, found {token:?}"
+                )));
             }
         }
     };
     if check_for_call {
         loop {
             match tokens.peek() {
-                Some(Token::ClosingBracket | Token::ClosingSquareBracket | Token::Semicolon)
+                Some(
+                    Token::ClosingBracket
+                    | Token::ClosingSquareBracket
+                    | Token::Semicolon
+                    | Token::Comma,
+                )
                 | None => break,
                 a => {
                     if let Some(a) = a {
