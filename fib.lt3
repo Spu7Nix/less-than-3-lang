@@ -1,0 +1,5 @@
+0 fib = 0;
+1 fib = 1;
+n fib = (n-1) fib + (n-2) fib;
+
+main = 0..20 * fib;

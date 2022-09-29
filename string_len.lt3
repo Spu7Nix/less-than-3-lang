@@ -1,0 +1,5 @@
+a add = +a;
+len = (*<~1)+(/add);
+strlen = (/"")+len;
+
+main = "hello" strlen;

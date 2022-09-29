@@ -3,7 +3,7 @@ use internment::Intern;
 
 use crate::{
     builtin::{run_builtin, Builtin},
-    parser::{Expression, Item, Token},
+    parser::{Expression, Item, Symbol, Token},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,6 +25,11 @@ pub enum Function {
     And(Value),
     Or(Value),
 
+    Replace(Value),
+    Range(Value),
+
+    Cases(Vec<ArgCase>),
+
     //Compose(Value),
     Composit(Box<Function>, Box<Function>),
 
@@ -37,6 +42,35 @@ impl Function {
         state.arg = Some(arg.clone());
         let out = match (arg, self) {
             (arg, Function::Builtin(builtin)) => run_builtin(*builtin, arg),
+            (arg, Function::Cases(cases)) => {
+                let mut out = Value::Tuple(Vec::new());
+                for case in cases {
+                    match case {
+                        ArgCase::Value(val, body) => {
+                            if arg == val {
+                                out = body.clone().to_value(state);
+                                break;
+                            }
+                        }
+                        ArgCase::General(symbol, body) => {
+                            let temp = state.definitions.get(symbol).cloned();
+                            state
+                                .definitions
+                                .insert(*symbol, LazyValue::Evaled(arg.clone()));
+                            out = eval_expression(body.clone(), state);
+                            if let Some(temp) = temp {
+                                state.definitions.insert(*symbol, temp.clone());
+                            } else {
+                                state.definitions.remove(symbol);
+                            }
+                            break;
+                        }
+                    }
+                }
+                out
+            }
+
+            (_, Function::Replace(val)) => val.clone(),
             (Value::Number(n), Function::Plus(Value::Number(n2))) => Value::Number(n + n2),
 
             (Value::String(s), Function::Plus(Value::String(s2))) => Value::String(s.clone() + s2),
@@ -44,7 +78,11 @@ impl Function {
                 Value::String(s.repeat(*n as usize))
             }
             (Value::String(s), Function::Div(Value::String(s2))) => {
-                Value::Tuple(s.split(s2).map(|s| Value::String(s.to_string())).collect())
+                if s2.is_empty() {
+                    Value::Tuple(s.chars().map(|c| Value::String(c.to_string())).collect())
+                } else {
+                    Value::Tuple(s.split(s2).map(|s| Value::String(s.to_string())).collect())
+                }
             }
 
             (Value::Tuple(t), Function::Plus(Value::Tuple(t2))) => Value::Tuple(
@@ -87,6 +125,17 @@ impl Function {
             (Value::Number(n), Function::Lt(Value::Number(n2))) => Value::Bool(n < n2),
             (Value::Number(n), Function::Gte(Value::Number(n2))) => Value::Bool(n >= n2),
             (Value::Number(n), Function::Lte(Value::Number(n2))) => Value::Bool(n <= n2),
+            (Value::Number(n), Function::Range(Value::Number(n2))) => {
+                // check that numbers are ints
+                if *n != n.floor() || *n2 != n2.floor() {
+                    panic!("Range must be integers");
+                }
+                Value::Tuple(
+                    ((*n as i32)..(*n2 as i32))
+                        .map(|i| Value::Number(i as f64))
+                        .collect(),
+                )
+            }
 
             (Value::Bool(b1), Function::And(Value::Bool(b2))) => Value::Bool(*b1 && *b2),
             (Value::Bool(b1), Function::Or(Value::Bool(b2))) => Value::Bool(*b1 || *b2),
@@ -97,6 +146,14 @@ impl Function {
             (Value::Function(f), Function::Apply(val)) => f.call(val, state),
             (Value::Function(f), Function::Plus(Value::Function(f2))) => {
                 Value::Function(Box::from(Function::Composit(f.clone(), f2.clone())))
+            }
+
+            (Value::Function(f), Function::Mult(Value::Number(n))) => {
+                let mut f2 = f.clone();
+                for _ in 1..*n as usize {
+                    f2 = Box::from(Function::Composit(f.clone(), f2.clone()));
+                }
+                Value::Function(f2)
             }
 
             (arg, Function::Composit(f1, f2)) => f2.call(&f1.call(arg, state), state),
@@ -145,7 +202,7 @@ impl std::fmt::Display for Value {
             Value::Function(box Function::Lte(v)) => write!(f, "<={}", v),
             Value::Function(box Function::Eq(v)) => write!(f, "=={}", v),
             Value::Function(box Function::Neq(v)) => write!(f, "!={}", v),
-            Value::Function(box Function::Apply(v)) => write!(f, "apply({})", v),
+            Value::Function(box Function::Apply(v)) => write!(f, ":{}", v),
             Value::Function(box Function::Composit(f1, f2)) => {
                 write!(
                     f,
@@ -216,28 +273,111 @@ fn eval_expression(e: Expression, state: &mut State) -> Value {
                 Token::And => And(val),
                 Token::Or => Or(val),
 
+                Token::Replace => Replace(val),
+
+                Token::Range => Range(val),
+
                 //Token::Period => Compose(val),
                 a => panic!("Invalid operator: {:?}", a),
             }))
         }
     }
 }
+#[derive(Debug, Clone, PartialEq)]
+pub enum ArgCase {
+    General(Symbol, Expression),
+    Value(Value, LazyValue),
+}
+#[derive(Debug, Clone, PartialEq)]
+pub enum Definition {
+    Single,
+    Cases(Vec<ArgCase>),
+}
+impl Definition {
+    fn unwrap_cases(self) -> Vec<ArgCase> {
+        match self {
+            Definition::Single => panic!("Expected cases"),
+            Definition::Cases(cases) => cases,
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct State {
-    pub definitions: FnvHashMap<Intern<String>, LazyValue>,
+    pub definitions: FnvHashMap<Symbol, LazyValue>,
     pub arg: Option<Value>,
 }
 
 pub fn interpret(items: Vec<Item>) -> Value {
     let mut state = State::default();
+
+    let mut definitions = FnvHashMap::<Symbol, Definition>::default();
     for item in items {
         match item {
             Item::Definition { name, value } => {
                 state.definitions.insert(name, LazyValue::NotEvaled(value));
+                definitions.insert(name, Definition::Single);
+            }
+            Item::CaseDefinition { val, name, body } => {
+                match val {
+                    Expression::Symbol(s) if !state.definitions.contains_key(&s) => {
+                        match definitions.get_mut(&name) {
+                            Some(Definition::Single) => panic!("This function is already defined"),
+                            None => {
+                                definitions.insert(
+                                    name,
+                                    Definition::Cases(vec![ArgCase::General(s, body)]),
+                                );
+                            }
+                            Some(Definition::Cases(cases)) => {
+                                for case in cases.iter() {
+                                    if let ArgCase::General(_, _) = case {
+                                        panic!("This case is already defined")
+                                    }
+                                }
+                                cases.push(ArgCase::General(s, body));
+                            }
+                        };
+                    }
+                    _ => {
+                        let val = eval_expression(val, &mut state);
+
+                        match definitions.get_mut(&name) {
+                            Some(Definition::Single) => panic!("This function is already defined"),
+                            None => {
+                                definitions.insert(
+                                    name,
+                                    Definition::Cases(vec![ArgCase::Value(
+                                        val,
+                                        LazyValue::NotEvaled(body),
+                                    )]),
+                                );
+                            }
+                            Some(Definition::Cases(cases)) => {
+                                for case in cases.iter() {
+                                    if let ArgCase::Value(v, _) = case {
+                                        if v == &val {
+                                            panic!("This case is already defined");
+                                        }
+                                    } else {
+                                        panic!("This case is already defined")
+                                    }
+                                }
+                                cases.push(ArgCase::Value(val, LazyValue::NotEvaled(body)));
+                            }
+                        };
+                    }
+                };
+                state.definitions.insert(
+                    name,
+                    LazyValue::Evaled(Value::Function(Box::new(Function::Cases(
+                        definitions[&name].clone().unwrap_cases(),
+                    )))),
+                );
             }
         }
     }
+
     state.definitions[&Intern::new("main".to_string())]
         .clone()
         .to_value(&mut state)

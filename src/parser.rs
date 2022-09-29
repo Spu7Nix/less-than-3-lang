@@ -52,6 +52,12 @@ pub enum Token {
     #[token("=")]
     Assign,
 
+    #[token("<~")]
+    Replace,
+
+    #[token("..")]
+    Range,
+
     // values
     #[regex(r"([a-zA-Z_][a-zA-Z0-9_]*)|\$", |lexer| lexer.slice().to_string())]
     Symbol(String),
@@ -130,6 +136,8 @@ macro_rules! operator_pat {
             | Token::Exclamation
             //| Token::Comma
             | Token::Colon
+            | Token::Replace
+            | Token::Range
         //| Token::Period
     };
 }
@@ -151,15 +159,25 @@ fn precedence(op: &Token) -> u8 {
         Token::Modulo => 5,
         Token::Slash => 5,
         Token::Power => 4,
+        Token::Range => 4,
         Token::Colon => 3,
+        Token::Replace => 2,
         _ => 0,
     }
 }
-type Symbol = Intern<String>;
+pub type Symbol = Intern<String>;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Item {
-    Definition { name: Symbol, value: Expression },
+    Definition {
+        name: Symbol,
+        value: Expression,
+    },
+    CaseDefinition {
+        val: Expression,
+        name: Symbol,
+        body: Expression,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -231,21 +249,43 @@ fn parse_symbol(tokens: &mut Tokens) -> Result<Symbol, SyntaxError> {
 }
 
 fn parse_item(tokens: &mut Tokens) -> Result<Item, SyntaxError> {
-    let name = parse_symbol(tokens)?;
+    let two_first = (tokens.next(), tokens.next());
+    match two_first {
+        (Some(Token::Symbol(symbol)), Some(Token::Assign)) => {
+            let value = parse_expression(tokens, !0, true)?;
+            if let Some(Token::Semicolon) = tokens.next() {
+            } else {
+                return Err(SyntaxError::Message("Expected ;".to_string()));
+            }
 
-    if let Some(Token::Assign) = tokens.next() {
-    } else {
-        return Err(SyntaxError::Message("Expected =".to_string()));
+            Ok(Item::Definition {
+                name: Intern::from(&symbol),
+                value,
+            })
+        }
+        _ => {
+            tokens.previous();
+            tokens.previous();
+            let base = parse_operand(tokens)?;
+            let name = parse_symbol(tokens)?;
+            if let Some(Token::Assign) = tokens.next() {
+            } else {
+                return Err(SyntaxError::Message("Expected =".to_string()));
+            }
+            let value = parse_expression(tokens, !0, true)?;
+
+            if let Some(Token::Semicolon) = tokens.next() {
+            } else {
+                return Err(SyntaxError::Message("Expected ;".to_string()));
+            }
+
+            Ok(Item::CaseDefinition {
+                val: base,
+                name,
+                body: value,
+            })
+        }
     }
-
-    let value = parse_expression(tokens, !0, true)?;
-
-    if let Some(Token::Semicolon) = tokens.next() {
-    } else {
-        return Err(SyntaxError::Message("Expected ;".to_string()));
-    }
-
-    Ok(Item::Definition { name, value })
 }
 
 fn parse_expression(
@@ -253,10 +293,38 @@ fn parse_expression(
     max_precedence: u8,
     check_for_call: bool,
 ) -> Result<Expression, SyntaxError> {
+    let mut base = parse_operand(tokens)?;
+    if check_for_call {
+        loop {
+            match tokens.peek() {
+                Some(
+                    Token::ClosingBracket
+                    | Token::ClosingSquareBracket
+                    | Token::Semicolon
+                    | Token::Comma,
+                )
+                | None => break,
+                a => {
+                    if let Some(a) = a {
+                        if is_operator(&a) && precedence(&a) >= max_precedence {
+                            break;
+                        }
+                    }
+                    // function call
+                    let function = parse_expression(tokens, max_precedence, false)?;
+                    base = Expression::FunctionCall(Box::new(base), Box::new(function))
+                }
+            }
+        }
+    }
+    Ok(base)
+}
+
+fn parse_operand(tokens: &mut Tokens) -> Result<Expression, SyntaxError> {
     let token = tokens
         .next()
         .ok_or_else(|| SyntaxError::Message("Unexpected end of file".to_string()))?;
-    let mut base = match token {
+    Ok(match token {
         Token::Symbol(symbol) => Expression::Symbol(Intern::from(&symbol)),
         Token::Number(number) => Expression::Number(number),
         Token::StringLiteral(string) => Expression::StringLiteral(string),
@@ -307,31 +375,7 @@ fn parse_expression(
                 )));
             }
         }
-    };
-    if check_for_call {
-        loop {
-            match tokens.peek() {
-                Some(
-                    Token::ClosingBracket
-                    | Token::ClosingSquareBracket
-                    | Token::Semicolon
-                    | Token::Comma,
-                )
-                | None => break,
-                a => {
-                    if let Some(a) = a {
-                        if is_operator(&a) && precedence(&a) >= max_precedence {
-                            break;
-                        }
-                    }
-                    // function call
-                    let function = parse_expression(tokens, max_precedence, false)?;
-                    base = Expression::FunctionCall(Box::new(base), Box::new(function))
-                }
-            }
-        }
-    }
-    Ok(base)
+    })
 }
 
 fn is_operator(token: &Token) -> bool {

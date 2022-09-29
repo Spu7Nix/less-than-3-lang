@@ -1,0 +1,13 @@
+"0" digit = 0;
+"1" digit = 1;
+"2" digit = 2;
+"3" digit = 3;
+"4" digit = 4;
+"5" digit = 5;
+"6" digit = 6;
+"7" digit = 7;
+"8" digit = 8;
+"9" digit = 9;
+
+parse = (/"") + (*digit);
+main = "1234" parse;
